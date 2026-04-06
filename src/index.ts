@@ -6,7 +6,7 @@
  * - Time tracking (log hours, projects, activities)
  * - Invoices (search, create, send)
  * - Customers & suppliers (search, create, update)
- * - Accounting (vouchers, chart of accounts)
+ * - Accounting (vouchers, chart of accounts, balance sheet)
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -417,6 +417,60 @@ server.tool(
       })),
     };
     const data = await client.post("/ledger/voucher", body);
+    return { content: [{ type: "text" as const, text: formatResult(data) }] };
+  }
+);
+
+// ===========================================================================
+// BALANCE SHEET
+// ===========================================================================
+
+server.tool(
+  "get_balance_sheet",
+  "Get the balance sheet (saldobalanse) for a given period and optional filters",
+  {
+    dateFrom: z.string().describe("Start date YYYY-MM-DD (inclusive)"),
+    dateTo: z.string().describe("End date YYYY-MM-DD (exclusive)"),
+    accountNumberFrom: z.string().optional().describe("Account number range start"),
+    accountNumberTo: z.string().optional().describe("Account number range end"),
+    customerId: z.number().optional().describe("Filter by customer ID"),
+    employeeId: z.number().optional().describe("Filter by employee ID"),
+    departmentId: z.number().optional().describe("Filter by department ID"),
+    projectId: z.number().optional().describe("Filter by project ID"),
+    includeSubProjects: z.boolean().optional().describe("Include sub-projects"),
+    activeAccountsWithoutMovements: z.boolean().optional().describe("Include active accounts without movements"),
+    from: z.number().optional().describe("Pagination start index (0-based)"),
+    count: z.number().optional().describe("Max results to return (default 1000)"),
+  },
+  async ({
+    dateFrom,
+    dateTo,
+    accountNumberFrom,
+    accountNumberTo,
+    customerId,
+    employeeId,
+    departmentId,
+    projectId,
+    includeSubProjects,
+    activeAccountsWithoutMovements,
+    from,
+    count,
+  }) => {
+    const params = optionalParams({
+      dateFrom,
+      dateTo,
+      accountNumberFrom,
+      accountNumberTo,
+      customerId: customerId?.toString(),
+      employeeId: employeeId?.toString(),
+      departmentId: departmentId?.toString(),
+      projectId: projectId?.toString(),
+      includeSubProjects: includeSubProjects?.toString(),
+      activeAccountsWithoutMovements: activeAccountsWithoutMovements?.toString(),
+      from: from?.toString(),
+      count: (count ?? 1000).toString(),
+    });
+    const data = await client.get("/balanceSheet", params);
     return { content: [{ type: "text" as const, text: formatResult(data) }] };
   }
 );
