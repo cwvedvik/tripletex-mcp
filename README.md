@@ -2,7 +2,7 @@
 
 En open source [MCP-server](https://modelcontextprotocol.io/) som lar AI-assistenter (Claude, Cursor, osv.) jobbe direkte mot Tripletex sitt regnskapssystem.
 
-Bygd og vedlikeholdt av [CWV Ventures AS](https://cwvventures.no).
+Bygd og vedlikeholdt av [CWV Ventures AS](https://cwv.no).
 
 ## Hva kan den gjøre?
 
