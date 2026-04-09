@@ -12,6 +12,7 @@ import {
   transformVoucherPosting,
   type OrderLineInput,
 } from "./tripletex-transform.js";
+import { registerSkills } from "./skills/registry.js";
 
 const client = new TripletexClient();
 const server = new McpServer({
@@ -716,6 +717,12 @@ server.tool(
   {},
   async () => run(() => client.get("/token/session/>whoAmI"))
 );
+
+// ===========================================================================
+// SKILLS (MCP Prompts + Resource)
+// ===========================================================================
+
+registerSkills(server);
 
 // ===========================================================================
 // START
