@@ -4,6 +4,9 @@ En open source [MCP-server](https://modelcontextprotocol.io/) som lar AI-assiste
 
 Bygd og vedlikeholdt av [CWV Ventures AS](https://cwv.no).
 
+## Trenger du hjelp til implementering?
+Kontakt meg på carl@cwv.no.
+
 ## Hva kan den gjøre?
 
 | Kategori | Verktøy | Beskrivelse |
