@@ -321,6 +321,32 @@ Dette er en fakta-orientert oversikt over hvordan serveren er bygget — tenkt s
 
 Pull requests er velkomne! Åpne gjerne et issue hvis du har forslag til nye verktøy eller forbedringer.
 
+## Testing
+
+Tests use [Vitest](https://vitest.dev/) and focus first on the pure transform functions in `src/tripletex-transform.ts` — request-body builders that mirror the Tripletex v2 DTO shapes exactly.
+
+### Commands
+
+- `npm test` — run the full test suite once
+- `npm run test:watch` — watch mode, re-run on file change
+- `npm run test:coverage` — run with coverage report (V8 provider, HTML + LCOV output in `coverage/`)
+
+### Scope
+
+The current suite covers every exported function in `src/tripletex-transform.ts`:
+
+- `transformOrderLine`
+- `buildOrderBody`
+- `transformVoucherPosting`
+- `buildSupplierInvoiceVoucherBody` — including the balancing-credit invariant (sum of `amountGross` across all postings equals zero)
+- `wrapPostingsForSupplierInvoiceUpdate`
+
+Client-level tests (auth, retries, HTTP transport) are intentionally deferred — those require mocking the Tripletex API and live in a follow-up. See `tests/README.md` for contributor conventions.
+
+### CI
+
+GitHub Actions runs typecheck, tests, and build on every pull request and push to `main`. See `.github/workflows/test.yml`.
+
 ## Lisens
 
 MIT — se [LICENSE](LICENSE) for detaljer.
