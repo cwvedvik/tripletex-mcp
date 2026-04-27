@@ -18,6 +18,14 @@ export interface TripletexClientOptions {
   consumerToken: string;
   employeeToken: string;
   baseUrl?: string;
+  /** Max retries on 429. Default 3. */
+  maxRetries?: number;
+  /** Initial backoff in ms when no rate-limit header present. Default 1000. */
+  initialBackoffMs?: number;
+  /** Override fetch (for tests or custom transports). Default globalThis.fetch. */
+  fetch?: typeof globalThis.fetch;
+  /** Override sleep (for tests). Default setTimeout-based. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export class TripletexApiError extends Error {
@@ -31,17 +39,54 @@ export class TripletexApiError extends Error {
   }
 }
 
+export class TripletexRateLimitError extends TripletexApiError {
+  constructor(
+    message: string,
+    status: number,
+    bodyText: string,
+    public readonly retryAfterMs: number,
+  ) {
+    super(message, status, bodyText);
+    this.name = "TripletexRateLimitError";
+  }
+}
+
+export function computeBackoffMs(
+  attempt: number,
+  headers: Headers,
+  initialBackoffMs: number,
+): number {
+  const reset = headers.get("X-Rate-Limit-Reset");
+  if (reset !== null && !Number.isNaN(Number(reset))) {
+    return Math.max(0, Number(reset) * 1000);
+  }
+  const retryAfter = headers.get("Retry-After");
+  if (retryAfter !== null && !Number.isNaN(Number(retryAfter))) {
+    return Math.max(0, Number(retryAfter) * 1000);
+  }
+  return initialBackoffMs * (attempt + 1);
+}
+
 export class TripletexClient {
   private consumerToken: string;
   private employeeToken: string;
   private baseUrl: string;
   private session: SessionToken | null = null;
+  private readonly maxRetries: number;
+  private readonly initialBackoffMs: number;
+  private readonly fetchImpl: typeof globalThis.fetch;
+  private readonly sleepImpl: (ms: number) => Promise<void>;
 
   constructor(options?: TripletexClientOptions) {
     if (options) {
       this.consumerToken = options.consumerToken;
       this.employeeToken = options.employeeToken;
       this.baseUrl = options.baseUrl ?? PROD_BASE;
+      this.maxRetries = options.maxRetries ?? 3;
+      this.initialBackoffMs = options.initialBackoffMs ?? 1000;
+      this.fetchImpl = options.fetch ?? globalThis.fetch;
+      this.sleepImpl =
+        options.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
       return;
     }
     const consumer = process.env.TRIPLETEX_CONSUMER_TOKEN;
@@ -55,6 +100,10 @@ export class TripletexClient {
     this.employeeToken = employee;
     this.baseUrl =
       process.env.TRIPLETEX_ENV === "test" ? TEST_BASE : PROD_BASE;
+    this.maxRetries = 3;
+    this.initialBackoffMs = 1000;
+    this.fetchImpl = globalThis.fetch;
+    this.sleepImpl = (ms: number) => new Promise((r) => setTimeout(r, ms));
   }
 
   private async createSession(): Promise<void> {
@@ -64,7 +113,7 @@ export class TripletexClient {
 
     const url = `${this.baseUrl}/token/session/:create?consumerToken=${encodeURIComponent(this.consumerToken)}&employeeToken=${encodeURIComponent(this.employeeToken)}&expirationDate=${expDate}`;
 
-    const res = await fetch(url, { method: "PUT" });
+    const res = await this.fetchImpl(url, { method: "PUT" });
     if (!res.ok) {
       const text = await res.text();
       throw new TripletexApiError(
@@ -92,47 +141,79 @@ export class TripletexClient {
     return "Basic " + Buffer.from(`0:${sessionToken}`).toString("base64");
   }
 
+  private async fetchWithRetry(
+    method: string,
+    path: string,
+    buildRequest: () => Promise<Response>,
+  ): Promise<Response> {
+    let sessionRefreshed = false;
+    let attempt = 0;
+
+    for (;;) {
+      const res = await buildRequest();
+
+      if (res.status === 401 && !sessionRefreshed) {
+        this.session = null;
+        sessionRefreshed = true;
+        continue;
+      }
+
+      if (res.status === 429) {
+        const backoffMs = computeBackoffMs(
+          attempt,
+          res.headers,
+          this.initialBackoffMs,
+        );
+        if (attempt >= this.maxRetries) {
+          const text = await res.text();
+          throw new TripletexRateLimitError(
+            `Tripletex ${method} ${path} rate limited (429) after ${attempt} retries`,
+            429,
+            text,
+            backoffMs,
+          );
+        }
+        await this.sleepImpl(backoffMs);
+        attempt++;
+        continue;
+      }
+
+      return res;
+    }
+  }
+
   async request(
     method: string,
     path: string,
     params?: Record<string, string>,
     body?: unknown,
-    isRetry = false
   ): Promise<unknown> {
-    const token = await this.ensureSession();
-    const url = new URL(`${this.baseUrl}${path}`);
-    if (params) {
-      for (const [k, v] of Object.entries(params)) {
-        url.searchParams.set(k, v);
+    const res = await this.fetchWithRetry(method, path, async () => {
+      const token = await this.ensureSession();
+      const url = new URL(`${this.baseUrl}${path}`);
+      if (params) {
+        for (const [k, v] of Object.entries(params)) {
+          url.searchParams.set(k, v);
+        }
       }
-    }
-
-    const headers: Record<string, string> = {
-      Authorization: this.authHeader(token),
-      "Content-Type": "application/json",
-    };
-
-    const res = await fetch(url.toString(), {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
+      return this.fetchImpl(url.toString(), {
+        method,
+        headers: {
+          Authorization: this.authHeader(token),
+          "Content-Type": "application/json",
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      });
     });
 
-    if (res.status === 401 && !isRetry) {
-      this.session = null;
-      return this.request(method, path, params, body, true);
-    }
-
     const text = await res.text();
-
     if (!res.ok) {
       throw new TripletexApiError(
         `Tripletex ${method} ${path} (${res.status})`,
         res.status,
-        text
+        text,
       );
     }
-
     if (!text) return {};
     try {
       return JSON.parse(text) as unknown;
@@ -166,7 +247,7 @@ export class TripletexClient {
     formData: FormData,
     params?: Record<string, string>
   ): Promise<unknown> {
-    return this.multipartRequest("POST", path, params, formData, false);
+    return this.multipartRequest("POST", path, params, formData);
   }
 
   private async multipartRequest(
@@ -174,40 +255,33 @@ export class TripletexClient {
     path: string,
     params: Record<string, string> | undefined,
     formData: FormData,
-    isRetry: boolean
   ): Promise<unknown> {
-    const token = await this.ensureSession();
-    const url = new URL(`${this.baseUrl}${path}`);
-    if (params) {
-      for (const [k, v] of Object.entries(params)) {
-        if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
+    const res = await this.fetchWithRetry(method, path, async () => {
+      const token = await this.ensureSession();
+      const url = new URL(`${this.baseUrl}${path}`);
+      if (params) {
+        for (const [k, v] of Object.entries(params)) {
+          if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
+        }
       }
-    }
-
-    const res = await fetch(url.toString(), {
-      method,
-      headers: {
-        Authorization: this.authHeader(token),
-        Accept: "application/json",
-      },
-      body: formData,
+      return this.fetchImpl(url.toString(), {
+        method,
+        headers: {
+          Authorization: this.authHeader(token),
+          Accept: "application/json",
+        },
+        body: formData,
+      });
     });
 
-    if (res.status === 401 && !isRetry) {
-      this.session = null;
-      return this.multipartRequest(method, path, params, formData, true);
-    }
-
     const text = await res.text();
-
     if (!res.ok) {
       throw new TripletexApiError(
         `Tripletex ${method} ${path} (${res.status})`,
         res.status,
-        text
+        text,
       );
     }
-
     if (!text) return {};
     try {
       return JSON.parse(text) as unknown;
